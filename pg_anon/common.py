@@ -4,10 +4,12 @@ import os.path
 import re
 import subprocess
 import sys
+import time
 import traceback
 from enum import Enum
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Callable
 
+import aioprocessing
 from pkg_resources import parse_version as version
 
 
@@ -202,3 +204,33 @@ def get_dict_rule_for_table(dictionary_obj: List[Dict], schema: str, table: str)
             result = rule
 
     return result
+
+
+async def init_process(name: str, ctx, target_func: Callable, tasks: List, *args, **kwargs):
+    from pg_anon.context import Context
+
+    ctx: Context
+    start_t = time.time()
+    ctx.logger.info(f"================> Process [{name}] started. Input items: {len(tasks)}")
+    queue = aioprocessing.AioQueue()
+
+    p = aioprocessing.AioProcess(
+        target=target_func,
+        args=(name, ctx, queue, tasks, *args),
+        kwargs=kwargs,
+    )
+    p.start()
+    res = None
+    while True:
+        result = await queue.coro_get()
+        if result is None:
+            break
+        res = result
+    await p.coro_join()
+    end_t = time.time()
+    elapsed = round(end_t - start_t, 2)
+    result_item_log = str(len(res)) if res is not None else "0"
+    ctx.logger.info(
+        f"<================ Process [{name}] finished, elapsed: {elapsed} sec. Result {result_item_log} item(s)"
+    )
+    return res

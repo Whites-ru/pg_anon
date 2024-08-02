@@ -21,7 +21,6 @@ class Context:
         self.prepared_dictionary_obj: Dict = {}
         self.prepared_dictionary_contents: Dict = {}  # for dump process
         self.metadata = None  # for restore process
-        self.task_results = {}  # for dump process (key is hash() of SQL query)
         self.total_rows = 0
         self.create_dict_sens_matches = {}  # for create-dict mode
         self.create_dict_no_sens_matches = {}  # for create-dict mode

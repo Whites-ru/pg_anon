@@ -7,8 +7,11 @@ import re
 import subprocess
 from datetime import datetime
 from hashlib import sha256
+from typing import List, Tuple
 
 import asyncpg
+import nest_asyncio
+from aioprocessing import AioQueue
 
 from asyncpg import Connection, Pool
 
@@ -20,6 +23,8 @@ from pg_anon.common import (
     exception_helper,
     get_pg_util_version,
     get_dict_rule_for_table,
+    chunkify,
+    init_process,
 )
 from pg_anon.context import Context
 
@@ -137,6 +142,8 @@ async def dump_by_query(ctx: Context, pool: Pool, query: str, sn_id: str, file_n
         raise Exception(f"Can't execute task: {query}")
 
     ctx.logger.info(f"<================ Finished task {query}")
+
+    return {hash(query): count_rows}
 
 
 async def get_tables_to_dump(excluded_schemas: list, db_conn: asyncpg.Connection):
@@ -289,33 +296,94 @@ async def generate_dump_queries(ctx, db_conn):
     return queries, files
 
 
-async def make_dump_impl(ctx, db_conn, sn_id):
-    loop = asyncio.get_event_loop()
-    tasks = set()
-    pool = await asyncpg.create_pool(
-        **ctx.conn_params, min_size=ctx.args.threads, max_size=ctx.args.threads
-    )
+def process_dump_impl(name: str, ctx: Context, queue: AioQueue, query_tasks: List[Tuple[str, str]], sn_id: str): # TODO: rename
+    tasks_res = []
 
+    status_ratio = 10
+    if len(query_tasks) > 1000:
+        status_ratio = 100
+    if len(query_tasks) > 50000:
+        status_ratio = 1000
+
+    async def run():
+        pool = await asyncpg.create_pool(
+            **ctx.conn_params, min_size=ctx.args.threads, max_size=ctx.args.threads
+        )
+        tasks = set()
+
+        for idx, (file_name, query) in enumerate(query_tasks):
+            if len(tasks) >= ctx.args.threads:
+                # Wait for some dump to finish before adding a new one
+                done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                exception = done.pop().exception()
+                if exception is not None:
+                    await pool.close()
+                    raise exception
+
+            task_res = loop.create_task(
+                dump_by_query(ctx, pool, query, sn_id, file_name)
+            )
+
+            tasks.add(task_res)
+            tasks_res.append(task_res)
+
+            if idx % status_ratio:
+                progress_percents = round(float(idx) * 100 / len(query_tasks), 2)
+                ctx.logger.info(f"Process [{name}] Progress {progress_percents}%")
+
+        if len(tasks) > 0:
+            await asyncio.wait(tasks)
+
+        await pool.close()
+
+    nest_asyncio.apply()
+    loop = asyncio.new_event_loop()
+
+    try:
+        loop.run_until_complete(run())
+    except asyncio.exceptions.TimeoutError:
+        ctx.logger.error(f"================> Process [{name}]: asyncio.exceptions.TimeoutError")
+    finally:
+        loop.close()
+
+    tasks_res_final = []
+    for task in tasks_res:
+        if task.result() is not None and len(task.result()) > 0:
+            tasks_res_final.append(task.result())
+
+    queue.put(tasks_res_final)
+    queue.put(None)  # Shut down the worker
+    queue.close()
+
+
+async def make_dump_impl(ctx: Context, db_conn: Connection, sn_id: str):
     queries, files = await generate_dump_queries(ctx, db_conn)
     if not queries:
-        await pool.close()
         raise Exception("No objects for dump!")
 
-    zipped_list = list(zip([hash(v) for v in queries], files))
+    queries_chunks = list(chunkify(list(zip(files.keys(), queries)), ctx.args.processes))
 
-    for file_name, query in zip(files.keys(), queries):
-        if len(tasks) >= ctx.args.threads:
-            # Wait for some dump to finish before adding a new one
-            done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            exception = done.pop().exception()
-            if exception is not None:
-                await pool.close()
-                raise exception
-        tasks.add(loop.create_task(dump_obj_func(ctx, pool, query, sn_id, file_name)))
+    process_tasks = []
+    for idx, queries_chunk in enumerate(queries_chunks):
+        process_tasks.append(
+            asyncio.ensure_future(
+                init_process(
+                    name=str(idx + 1),
+                    ctx=ctx,
+                    target_func=process_dump_impl,
+                    tasks=queries_chunk,
+                    sn_id=sn_id,
+                )
+            )
+        )
 
     # Wait for the remaining dumps to finish
-    await asyncio.wait(tasks)
-    await pool.close()
+    await asyncio.wait(process_tasks)
+
+    task_results = {}
+    for process_task in process_tasks:
+        for res in process_task.result():
+            task_results.update(res)
 
     # Generate metadata.json
     query = """
@@ -372,8 +440,8 @@ async def make_dump_impl(ctx, db_conn, sn_id):
         ).hexdigest()
     metadata["prepared_sens_dict_files"] = ','.join(ctx.args.prepared_sens_dict_files)
 
-    for v in zipped_list:
-        files[v[1]].update({"rows": ctx.task_results[v[0]]})
+    for query, file in zip(queries, files):
+        files[file].update({"rows": task_results[hash(query)]})
 
     metadata["files"] = files
 
@@ -394,7 +462,7 @@ async def make_dump_impl(ctx, db_conn, sn_id):
         out_file.write(json.dumps(metadata, indent=4))
 
 
-async def make_dump(ctx):
+async def make_dump(ctx: Context):
     result = PgAnonResult()
     ctx.logger.info("-------------> Started dump mode")
 
