@@ -130,8 +130,7 @@ async def restore_table_data(
 
     try:
         async with pool.acquire() as db_conn:
-            async with db_conn.transaction():
-                await db_conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ;")
+            async with db_conn.transaction(isolation='repeatable_read'):
                 await db_conn.execute(f"SET TRANSACTION SNAPSHOT '{sn_id}';")
 
                 result = await db_conn.copy_to_table(
@@ -332,8 +331,7 @@ async def make_restore(ctx):
     result.result_code = ResultCode.DONE
     if ctx.args.mode != AnonMode.SYNC_STRUCT_RESTORE:
         try:
-            async with db_conn.transaction():
-                await db_conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ;")
+            async with db_conn.transaction(isolation='repeatable_read'):
                 await db_conn.execute("SET CONSTRAINTS ALL DEFERRED;")
                 sn_id = await db_conn.fetchval("select pg_export_snapshot()")
                 await make_restore_impl(ctx, sn_id)

@@ -10,6 +10,8 @@ from hashlib import sha256
 
 import asyncpg
 
+from asyncpg import Connection, Pool
+
 from pg_anon.common import (
     AnonMode,
     PgAnonResult,
@@ -19,7 +21,7 @@ from pg_anon.common import (
     get_pg_util_version,
     get_dict_rule_for_table,
 )
-
+from pg_anon.context import Context
 
 DEFAULT_EXCLUDED_SCHEMAS = ["pg_catalog", "information_schema"]
 
@@ -78,46 +80,63 @@ async def run_pg_dump(ctx, section):
         ctx.logger.info(v)
 
 
-async def get_dump_table(ctx, query: str, file_name: str, db_conn, output_dir: str):
-    full_file_name = os.path.join(output_dir, file_name.split(".")[0])
+async def dump_into_file(ctx: Context, db_conn: Connection, query: str, file_name: str):
     try:
-        result = await db_conn.copy_from_query(
-            query, output=f"{full_file_name}.bin", format="binary"
+        return await db_conn.copy_from_query(
+            query=query,
+            output=file_name,
+            format="binary",
         )
-        with open(f"{full_file_name}.bin", "rb") as f_in, gzip.open(
-            f"{full_file_name}.bin.gz", "wb"
-        ) as f_out:
-            f_out.writelines(f_in)
-        os.remove(f"{full_file_name}.bin")
-        return result
     except Exception as exc:
         ctx.logger.error(exc)
         raise exc
 
 
-async def dump_obj_func(ctx, pool, task, sn_id, file_name):
-    ctx.logger.info("================> Started task %s" % str(task))
+async def compress_file(ctx: Context, file_path: str, remove_origin_file_after_compress: bool = True):
+    gzipped_file_path = f'{file_path}.gz'
+
+    ctx.logger.debug(f"Start compressing file: {file_path}")
+    with (open(file_path, "rb") as f_in,
+          gzip.open(gzipped_file_path, "wb") as f_out):
+        f_out.writelines(f_in)
+    ctx.logger.debug(f"Compressing has done. Output file: {gzipped_file_path}")
+
+    if remove_origin_file_after_compress:
+        ctx.logger.debug(f"Removing origin file: {file_path}")
+        os.remove(file_path)
+
+
+async def dump_by_query(ctx: Context, pool: Pool, query: str, sn_id: str, file_name: str):
+    file_path = str(os.path.join(ctx.args.output_dir, file_name.split(".")[0]))
+    binary_output_file_path = f'{file_path}.bin'
+    ctx.logger.info(f"================> Started task {query} to file {binary_output_file_path}")
 
     try:
         async with pool.acquire() as db_conn:
-            async with db_conn.transaction():
-                await db_conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ;")
-                await db_conn.execute("SET TRANSACTION SNAPSHOT '%s';" % sn_id)
-                res = await get_dump_table(
+            async with db_conn.transaction(isolation='repeatable_read'):
+                await db_conn.execute(f"SET TRANSACTION SNAPSHOT '{sn_id}';")
+
+                result = await dump_into_file(
                     ctx,
-                    query=task,
-                    file_name=file_name,
                     db_conn=db_conn,
-                    output_dir=ctx.args.output_dir,
+                    query=query,
+                    file_name=binary_output_file_path,
                 )
-                count_rows = re.findall(r"(\d+)", res)[0]
-                ctx.task_results[hash(task)] = count_rows
-                ctx.logger.debug("COPY %s [rows] Task: %s " % (count_rows, str(task)))
+
+        count_rows = re.findall(r"(\d+)", result)[0]
+        ctx.logger.debug(f"COPY {count_rows} [rows] Task: {query}")
+
+        # Processing files no need to keep connection, after receiving data into binary file
+        await compress_file(
+            ctx=ctx,
+            file_path=binary_output_file_path
+        )
+
     except Exception as e:
         ctx.logger.error("Exception in dump_obj_func:\n" + exception_helper())
-        raise Exception("Can't execute task: %s" % task)
+        raise Exception(f"Can't execute task: {query}")
 
-    ctx.logger.info("<================ Finished task %s" % str(task))
+    ctx.logger.info(f"<================ Finished task {query}")
 
 
 async def get_tables_to_dump(excluded_schemas: list, db_conn: asyncpg.Connection):
@@ -446,8 +465,7 @@ async def make_dump(ctx):
     if ctx.args.mode != AnonMode.SYNC_STRUCT_DUMP:
         db_conn = await asyncpg.connect(**ctx.conn_params)
         try:
-            async with db_conn.transaction():
-                await db_conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ;")
+            async with db_conn.transaction(isolation='repeatable_read'):
                 sn_id = await db_conn.fetchval("select pg_export_snapshot()")
                 await make_dump_impl(ctx, db_conn, sn_id)
         except:
