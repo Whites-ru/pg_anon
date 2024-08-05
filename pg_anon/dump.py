@@ -131,11 +131,12 @@ async def dump_by_query(ctx: Context, pool: Pool, query: str, sn_id: str, file_n
         ctx.task_results[hash(query)] = count_rows
         ctx.logger.debug(f"COPY {count_rows} [rows] Task: {query}")
 
-        # Processing files no need to keep connection, after receiving data into binary file
-        await compress_file(
-            ctx=ctx,
-            file_path=binary_output_file_path
-        )
+        if not ctx.args.dbg_stage_1_validate_dict:
+            # Processing files no need to keep connection, after receiving data into binary file
+            await compress_file(
+                ctx=ctx,
+                file_path=binary_output_file_path
+            )
 
     except Exception as e:
         ctx.logger.error("Exception in dump_obj_func:\n" + exception_helper())
