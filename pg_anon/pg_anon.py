@@ -32,7 +32,7 @@ async def make_init(ctx):
     async def handle_notice(connection, message):
         ctx.logger.info("NOTICE: %s" % message)
 
-    db_conn = await asyncpg.connect(**ctx.conn_params)
+    db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
     db_conn.add_log_listener(handle_notice)
 
     tr = db_conn.transaction()
@@ -166,7 +166,7 @@ class MainRoutine:
 
         result = PgAnonResult()
         try:
-            db_conn = await asyncpg.connect(**self.ctx.conn_params)
+            db_conn = await asyncpg.connect(**self.ctx.conn_params, server_settings=self.ctx.server_settings)
             self.ctx.pg_version = await db_conn.fetchval("select version()")
             self.ctx.pg_version = re.findall(r"(\d+\.\d+)", str(self.ctx.pg_version))[0]
             await db_conn.close()
@@ -195,7 +195,9 @@ class MainRoutine:
                 AnonMode.SYNC_STRUCT_RESTORE,
             ):
                 result = await make_restore(self.ctx)
-                if self.ctx.args.mode != AnonMode.SYNC_STRUCT_RESTORE:
+                if (self.ctx.args.mode in (AnonMode.SYNC_DATA_RESTORE, AnonMode.RESTORE)
+                        and not self.ctx.metadata["dbg_stage_2_validate_data"]
+                        and not self.ctx.metadata["dbg_stage_3_validate_full"]):
                     await run_analyze(self.ctx)
             elif self.ctx.args.mode == AnonMode.INIT:
                 result = await make_init(self.ctx)

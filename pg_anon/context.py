@@ -30,6 +30,14 @@ class Context:
         if args.db_user_password == "" and os.environ.get("PGPASSWORD") is not None:
             args.db_user_password = os.environ["PGPASSWORD"]
 
+        self.server_settings = {
+            "application_name": "pg_anon",
+            "statement_timeout": "0",
+            "lock_timeout": "0",
+            "idle_in_transaction_session_timeout": "0",
+            "idle_session_timeout": "0",
+        }
+
         self.conn_params = {
             "host": args.db_host,
             "database": args.db_name,
@@ -255,16 +263,22 @@ class Context:
         parser.add_argument("--output-dir", type=str, default="")
         parser.add_argument("--input-dir", type=str, default="")
         parser.add_argument(
-            "--validate-dict",
+            "--dbg-stage-1-validate-dict",
             action="store_true",
             default=False,
             help="""Validate dictionary, show the tables and run SQL queries without data export""",
         )
         parser.add_argument(
-            "--validate-full",
+            "--dbg-stage-2-validate-data",
             action="store_true",
             default=False,
-            help="""Same as "--validate-dict" + data export with limit""",
+            help="""Validate data, show the tables and run SQL queries with data export in prepared database""",
+        )
+        parser.add_argument(
+            "--dbg-stage-3-validate-full",
+            action="store_true",
+            default=False,
+            help="""Makes all logic with "limit" in SQL queries""",
         )
         parser.add_argument("--clear-output-dir", action="store_true", default=False)
         parser.add_argument(

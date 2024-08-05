@@ -52,7 +52,7 @@ async def run_pg_restore(ctx, section):
 
 
 async def seq_init(ctx):
-    db_conn = await asyncpg.connect(**ctx.conn_params)
+    db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
     if ctx.args.seq_init_by_max_value:
         query = """
             DO $$
@@ -119,7 +119,7 @@ async def restore_table_data(
     table_name: str,
     sn_id: str,
 ):
-    ctx.logger.info(f"{'>':=>20} Started task copy_to_table {table_name}")
+    ctx.logger.info(f"{'>':=>20} Started task copy_to_table {schema_name}.{table_name}")
     if dump_file.endswith('.bin.gz'):
         extracted_file = f"{dump_file[:-7]}.bin"
     else:
@@ -146,19 +146,21 @@ async def restore_table_data(
             f"Exception in restore_obj_func:"
             f" {schema_name=}"
             f" {table_name=}"
-            f"\n{exc.query=}"
-            f"\n{exc.position=}"
+            f" {extracted_file=}"
             f"\n{exc=}"
         )
     finally:
         os.remove(extracted_file)
 
-    ctx.logger.info(f"{'>':=>20} Finished task {str(table_name)}")
+    ctx.logger.info(f"{'>':=>20} Finished task {schema_name}.{str(table_name)}")
 
 
 async def make_restore_impl(ctx, sn_id):
     pool = await asyncpg.create_pool(
-        **ctx.conn_params, min_size=ctx.args.threads, max_size=ctx.args.threads
+        **ctx.conn_params,
+        server_settings=ctx.server_settings,
+        min_size=ctx.args.threads,
+        max_size=ctx.args.threads
     )
 
     loop = asyncio.get_event_loop()
@@ -231,7 +233,7 @@ async def make_restore(ctx):
         ctx.logger.error(msg)
         raise RuntimeError(msg)
 
-    db_conn = await asyncpg.connect(**ctx.conn_params)
+    db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
     db_is_empty = await db_conn.fetchval(
         """
         SELECT NOT EXISTS(
@@ -254,7 +256,7 @@ async def make_restore(ctx):
     )
     metadata_content = metadata_file.read()
     metadata_file.close()
-    ctx.metadata = eval(metadata_content)
+    ctx.metadata = json.loads(metadata_content)
 
     if not ctx.args.disable_checks:
         if get_major_version(ctx.pg_version) < get_major_version(
@@ -284,7 +286,8 @@ async def make_restore(ctx):
             ctx.logger.info("AnonMode.SYNC_STRUCT_RESTORE: " + query)
             await db_conn.execute(query)
 
-    if ctx.args.mode != AnonMode.SYNC_DATA_RESTORE:
+    if (ctx.args.mode in (AnonMode.SYNC_STRUCT_RESTORE, AnonMode.RESTORE)
+            and not ctx.metadata["dbg_stage_2_validate_data"]):
         await run_pg_restore(ctx, "pre-data")
 
     if ctx.args.drop_custom_check_constr:
@@ -329,7 +332,7 @@ async def make_restore(ctx):
                 await db_conn.execute(query)
 
     result.result_code = ResultCode.DONE
-    if ctx.args.mode != AnonMode.SYNC_STRUCT_RESTORE:
+    if ctx.args.mode in (AnonMode.SYNC_DATA_RESTORE, AnonMode.RESTORE):
         try:
             async with db_conn.transaction(isolation='repeatable_read'):
                 await db_conn.execute("SET CONSTRAINTS ALL DEFERRED;")
@@ -350,10 +353,12 @@ async def make_restore(ctx):
             )
             result.result_code = ResultCode.FAIL
 
-    if ctx.args.mode != AnonMode.SYNC_DATA_RESTORE:
+    if (ctx.args.mode in (AnonMode.SYNC_STRUCT_RESTORE, AnonMode.RESTORE)
+            and not ctx.metadata["dbg_stage_2_validate_data"]
+            and not ctx.metadata["dbg_stage_3_validate_full"]):
         await run_pg_restore(ctx, "post-data")
 
-    if ctx.args.mode != AnonMode.SYNC_STRUCT_RESTORE:
+    if ctx.args.mode in (AnonMode.SYNC_DATA_RESTORE, AnonMode.RESTORE):
         await seq_init(ctx)
 
     await db_conn.close()
@@ -368,6 +373,7 @@ async def run_custom_query(ctx, pool, query):
     try:
         async with pool.acquire() as db_conn:
             await db_conn.execute(query)
+            ctx.logger.info("Execute query: %s" % query)
     except Exception as e:
         ctx.logger.error("Exception in dump_obj_func:\n" + exception_helper())
         raise Exception("Can't execute query: %s" % query)
@@ -378,7 +384,10 @@ async def run_custom_query(ctx, pool, query):
 async def run_analyze(ctx):
     ctx.logger.info("-------------> Started analyze")
     pool = await asyncpg.create_pool(
-        **ctx.conn_params, min_size=ctx.args.threads, max_size=ctx.args.threads
+        **ctx.conn_params,
+        server_settings=ctx.server_settings,
+        min_size=ctx.args.threads,
+        max_size=ctx.args.threads
     )
 
     queries = generate_analyze_queries(ctx)
@@ -411,7 +420,7 @@ async def validate_restore(ctx):
         return [], {}
 
     if "validate_tables" in ctx.prepared_dictionary_obj:
-        db_conn = await asyncpg.connect(**ctx.conn_params)
+        db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
         db_objs = await db_conn.fetch(
             """
             select n.nspname, c.relname --, c.reltuples

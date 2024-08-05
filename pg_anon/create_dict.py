@@ -91,7 +91,7 @@ def check_skip_fields(ctx, fld):
 
 
 async def generate_scan_objs(ctx):
-    db_conn = await asyncpg.connect(**ctx.conn_params)
+    db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
     query = """
     -- generate task queue
     SELECT DISTINCT
@@ -421,7 +421,10 @@ def process_impl(name: str, ctx: Context, queue: AioQueue, fields_info_chunk: Li
 
     async def run():
         pool = await asyncpg.create_pool(
-            **ctx.conn_params, min_size=ctx.args.threads, max_size=ctx.args.threads
+            **ctx.conn_params,
+            server_settings=ctx.server_settings,
+            min_size=ctx.args.threads,
+            max_size=ctx.args.threads
         )
         tasks = set()
 
