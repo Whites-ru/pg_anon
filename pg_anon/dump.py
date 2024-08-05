@@ -66,7 +66,7 @@ async def run_pg_dump(ctx, section):
         ctx.args.db_name,
     ]
     if not ctx.args.db_host:
-        del command[command.index("-h") : command.index("-h") + 2]
+        del command[command.index("-h"): command.index("-h") + 2]
 
     ctx.logger.debug(str(command))
     proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -82,6 +82,10 @@ async def run_pg_dump(ctx, section):
 
 async def dump_into_file(ctx: Context, db_conn: Connection, query: str, file_name: str):
     try:
+        if ctx.args.dbg_stage_1_validate_dict:
+            result = await db_conn.execute(query)
+            return result
+
         return await db_conn.copy_from_query(
             query=query,
             output=file_name,
@@ -124,6 +128,7 @@ async def dump_by_query(ctx: Context, pool: Pool, query: str, sn_id: str, file_n
                 )
 
         count_rows = re.findall(r"(\d+)", result)[0]
+        ctx.task_results[hash(query)] = count_rows
         ctx.logger.debug(f"COPY {count_rows} [rows] Task: {query}")
 
         # Processing files no need to keep connection, after receiving data into binary file
@@ -201,12 +206,14 @@ async def generate_dump_queries(ctx, db_conn):
                 [table_rule, table_schema, table_name, "if not found_white_list"]
             )
             # there is no table in the dictionary, so it will be transferred "as is"
-            if not ctx.args.validate_dict:
-                query = f"SELECT * FROM {table_name_full} {(ctx.validate_limit if ctx.args.validate_full else '')}"
+            if (ctx.args.dbg_stage_1_validate_dict
+                    or ctx.args.dbg_stage_2_validate_data
+                    or ctx.args.dbg_stage_3_validate_full):
+                query = "SELECT * FROM %s %s" % (table_name_full, ctx.validate_limit)
                 ctx.logger.info(str(query))
                 queries.append(query)
             else:
-                query = "SELECT * FROM %s %s" % (table_name_full, ctx.validate_limit)
+                query = f"SELECT * FROM {table_name_full}"
                 ctx.logger.info(str(query))
                 queries.append(query)
         else:
@@ -216,15 +223,14 @@ async def generate_dump_queries(ctx, db_conn):
             # table found in dictionary
             if "raw_sql" in table_rule:
                 # the table is transferred using "raw_sql"
-                if not ctx.args.validate_dict:
-                    query = "%s %s" % (
-                        table_rule["raw_sql"],
-                        (ctx.validate_limit if ctx.args.validate_full else ""),
-                    )
+                if (ctx.args.dbg_stage_1_validate_dict
+                        or ctx.args.dbg_stage_2_validate_data
+                        or ctx.args.dbg_stage_3_validate_full):
+                    query = table_rule["raw_sql"] + " " + ctx.validate_limit
                     ctx.logger.info(str(query))
                     queries.append(query)
                 else:
-                    query = table_rule["raw_sql"] + " " + ctx.validate_limit
+                    query = table_rule["raw_sql"]
                     ctx.logger.info(str(query))
                     queries.append(query)
             else:
@@ -265,19 +271,20 @@ async def generate_dump_queries(ctx, db_conn):
                     if cnt != len(fields_list) - 1:
                         sql_expr += ",\n"
 
-                if not ctx.args.validate_dict:
-                    query = "SELECT %s FROM %s %s" % (
-                        sql_expr,
-                        table_name_full,
-                        (ctx.validate_limit if ctx.args.validate_full else ""),
-                    )
-                    ctx.logger.info(str(query))
-                    queries.append(query)
-                else:
+                if (ctx.args.dbg_stage_1_validate_dict
+                        or ctx.args.dbg_stage_2_validate_data
+                        or ctx.args.dbg_stage_3_validate_full):
                     query = "SELECT %s FROM %s %s" % (
                         sql_expr,
                         table_name_full,
                         ctx.validate_limit,
+                    )
+                    ctx.logger.info(str(query))
+                    queries.append(query)
+                else:
+                    query = "SELECT %s FROM %s" % (
+                        sql_expr,
+                        table_name_full,
                     )
                     ctx.logger.info(str(query))
                     queries.append(query)
@@ -349,8 +356,11 @@ async def make_dump_impl(ctx: Context, db_conn: Connection, sn_id: str):
     for v in seq_res:
         seq_name = v[3] + "." + v[4]
         seq_val = await db_conn.fetchval(
-            """select last_value from \"""" + v[3] + """\".\"""" + v[4] + '"'
+            f'select last_value from "{v[3]}"."{v[4]}"'
         )
+        if ((ctx.args.dbg_stage_2_validate_data or ctx.args.dbg_stage_3_validate_full)
+                and seq_val > int(ctx.validate_limit.split()[1])):
+            seq_val = 100
 
         for _, f in files.items():
             if v[0] == f["schema"] and v[1] == f["table"]:
@@ -393,9 +403,18 @@ async def make_dump_impl(ctx: Context, db_conn: Connection, sn_id: str):
         total_rows += int(v["rows"])
     metadata["total_tables_size"] = total_tables_size
     metadata["total_rows"] = total_rows
+    if ctx.args.dbg_stage_2_validate_data:
+        metadata["dbg_stage_2_validate_data"] = True
+    else:
+        metadata["dbg_stage_2_validate_data"] = False
+    if ctx.args.dbg_stage_3_validate_full:
+        metadata["dbg_stage_3_validate_full"] = True
+    else:
+        metadata["dbg_stage_3_validate_full"] = False
 
-    with open(os.path.join(ctx.args.output_dir, "metadata.json"), "w") as out_file:
-        out_file.write(json.dumps(metadata, indent=4))
+    if not ctx.args.dbg_stage_1_validate_dict:
+        with open(os.path.join(ctx.args.output_dir, "metadata.json"), "w") as out_file:
+            out_file.write(json.dumps(metadata, indent=4))
 
 
 async def make_dump(ctx: Context):
@@ -422,7 +441,7 @@ async def make_dump(ctx: Context):
         if not dir_exists:
             os.makedirs(output_dir)
 
-        if not ctx.args.validate_dict:
+        if not ctx.args.dbg_stage_1_validate_dict:
             dir_empty = True
             for root, dirs, files in os.walk(output_dir):
                 for _ in files:
@@ -448,16 +467,17 @@ async def make_dump(ctx: Context):
                                 os.remove(os.path.join(root, file))
                             else:
                                 msg = (
-                                    "Option --clear-output-dir enabled. Unexpected file extension: %s"
-                                    % os.path.join(root, file)
+                                        "Option --clear-output-dir enabled. Unexpected file extension: %s"
+                                        % os.path.join(root, file)
                                 )
                                 ctx.logger.error(msg)
                                 raise Exception(msg)
 
-            if ctx.args.mode != AnonMode.SYNC_DATA_DUMP:
+            if ctx.args.mode in (AnonMode.SYNC_STRUCT_DUMP, AnonMode.DUMP) and not ctx.args.dbg_stage_2_validate_data:
                 ctx.logger.info("-------------> Started pg_dump")
                 await run_pg_dump(ctx, "pre-data")
-                await run_pg_dump(ctx, "post-data")
+                if not ctx.args.dbg_stage_3_validate_full:
+                    await run_pg_dump(ctx, "post-data")
                 ctx.logger.info("<------------- Finished pg_dump")
     except:
         ctx.logger.error("<------------- make_dump failed\n" + exception_helper())
@@ -466,7 +486,7 @@ async def make_dump(ctx: Context):
 
     result.result_code = ResultCode.DONE
 
-    if ctx.args.mode != AnonMode.SYNC_STRUCT_DUMP:
+    if ctx.args.mode in (AnonMode.SYNC_DATA_DUMP, AnonMode.DUMP):
         db_conn = await asyncpg.connect(**ctx.conn_params)
         try:
             async with db_conn.transaction(isolation='repeatable_read'):
@@ -494,6 +514,8 @@ async def make_dump(ctx: Context):
 
         metadata["total_tables_size"] = 0
         metadata["total_rows"] = 0
+        metadata["dbg_stage_2_validate_data"] = False
+        metadata["dbg_stage_3_validate_full"] = False
 
         tmp_list = []
         for v in ctx.prepared_dictionary_obj["dictionary"]:
