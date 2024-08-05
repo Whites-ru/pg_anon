@@ -301,7 +301,10 @@ async def make_dump_impl(ctx: Context, db_conn: Connection, sn_id: str):
     loop = asyncio.get_event_loop()
     tasks = set()
     pool = await asyncpg.create_pool(
-        **ctx.conn_params, min_size=ctx.args.threads, max_size=ctx.args.threads
+        **ctx.conn_params,
+        server_settings=ctx.server_settings,
+        min_size=ctx.args.threads,
+        max_size=ctx.args.threads
     )
 
     queries, files = await generate_dump_queries(ctx, db_conn)
@@ -488,7 +491,7 @@ async def make_dump(ctx: Context):
     result.result_code = ResultCode.DONE
 
     if ctx.args.mode in (AnonMode.SYNC_DATA_DUMP, AnonMode.DUMP):
-        db_conn = await asyncpg.connect(**ctx.conn_params)
+        db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
         try:
             async with db_conn.transaction(isolation='repeatable_read'):
                 sn_id = await db_conn.fetchval("select pg_export_snapshot()")

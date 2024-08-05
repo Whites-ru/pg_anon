@@ -90,7 +90,7 @@ def check_skip_fields(ctx, fld):
 
 
 async def generate_scan_objs(ctx):
-    db_conn = await asyncpg.connect(**ctx.conn_params)
+    db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
     query = """
     -- generate task queue
     SELECT DISTINCT
@@ -422,7 +422,10 @@ def process_impl(
 
     async def run():
         pool = await asyncpg.create_pool(
-            **conn_params, min_size=threads, max_size=threads
+            **conn_params,
+            server_settings=ctx.server_settings,
+            min_size=threads,
+            max_size=threads
         )
         tasks = set()
 

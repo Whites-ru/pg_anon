@@ -31,6 +31,14 @@ class Context:
         if args.db_user_password == "" and os.environ.get("PGPASSWORD") is not None:
             args.db_user_password = os.environ["PGPASSWORD"]
 
+        self.server_settings = {
+            "application_name": "pg_anon",
+            "statement_timeout": "0",
+            "lock_timeout": "0",
+            "idle_in_transaction_session_timeout": "0",
+            "idle_session_timeout": "0",
+        }
+
         self.conn_params = {
             "host": args.db_host,
             "database": args.db_name,

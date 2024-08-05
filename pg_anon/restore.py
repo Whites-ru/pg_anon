@@ -52,7 +52,7 @@ async def run_pg_restore(ctx, section):
 
 
 async def seq_init(ctx):
-    db_conn = await asyncpg.connect(**ctx.conn_params)
+    db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
     if ctx.args.seq_init_by_max_value:
         query = """
             DO $$
@@ -157,7 +157,10 @@ async def restore_table_data(
 
 async def make_restore_impl(ctx, sn_id):
     pool = await asyncpg.create_pool(
-        **ctx.conn_params, min_size=ctx.args.threads, max_size=ctx.args.threads
+        **ctx.conn_params,
+        server_settings=ctx.server_settings,
+        min_size=ctx.args.threads,
+        max_size=ctx.args.threads
     )
 
     loop = asyncio.get_event_loop()
@@ -230,7 +233,7 @@ async def make_restore(ctx):
         ctx.logger.error(msg)
         raise RuntimeError(msg)
 
-    db_conn = await asyncpg.connect(**ctx.conn_params)
+    db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
     db_is_empty = await db_conn.fetchval(
         """
         SELECT NOT EXISTS(
@@ -381,7 +384,10 @@ async def run_custom_query(ctx, pool, query):
 async def run_analyze(ctx):
     ctx.logger.info("-------------> Started analyze")
     pool = await asyncpg.create_pool(
-        **ctx.conn_params, min_size=ctx.args.threads, max_size=ctx.args.threads
+        **ctx.conn_params,
+        server_settings=ctx.server_settings,
+        min_size=ctx.args.threads,
+        max_size=ctx.args.threads
     )
 
     queries = generate_analyze_queries(ctx)
@@ -414,7 +420,7 @@ async def validate_restore(ctx):
         return [], {}
 
     if "validate_tables" in ctx.prepared_dictionary_obj:
-        db_conn = await asyncpg.connect(**ctx.conn_params)
+        db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
         db_objs = await db_conn.fetch(
             """
             select n.nspname, c.relname --, c.reltuples

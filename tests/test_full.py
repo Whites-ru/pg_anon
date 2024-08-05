@@ -146,7 +146,7 @@ class BasicUnitTest:
 
         ctx = Context(args)
 
-        db_conn = await asyncpg.connect(**ctx.conn_params)
+        db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
         await DBOperations.init_db(db_conn, params.test_source_db)
         await DBOperations.init_db(db_conn, params.test_target_db)
         await DBOperations.init_db(db_conn, params.test_target_db + "_2")
@@ -162,7 +162,7 @@ class BasicUnitTest:
         sourse_db_params["database"] = params.test_source_db
 
         print("============> Started init_env")
-        db_conn = await asyncpg.connect(**sourse_db_params)
+        db_conn = await asyncpg.connect(**sourse_db_params, server_settings=ctx.server_settings)
         await DBOperations.init_env(db_conn, "init_env.sql", params.test_scale)
         await db_conn.close()
         print("<============ Finished init_env")
@@ -208,7 +208,7 @@ class BasicUnitTest:
 
         ctx = Context(args)
 
-        db_conn = await asyncpg.connect(**ctx.conn_params)
+        db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
         await DBOperations.init_db_once(db_conn, params.test_source_db + "_stress")
 
         sourse_db_params = ctx.conn_params.copy()
@@ -235,7 +235,7 @@ class BasicUnitTest:
         await db_conn.close()
         if len(schema_exists) == 0:
             print("============> Started init_stress_env")
-            db_conn = await asyncpg.connect(**sourse_db_params)
+            db_conn = await asyncpg.connect(**sourse_db_params, server_settings=ctx.server_settings)
             await DBOperations.init_env(
                 db_conn, "init_stress_env.sql", params.test_scale
             )
@@ -252,7 +252,7 @@ class BasicUnitTest:
 
     async def check_rows(self, args, schema, table, fields, rows):
         ctx = Context(args)
-        db_conn = await asyncpg.connect(**ctx.conn_params)
+        db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
         if fields is None:
             db_rows = await db_conn.fetch(
                 """select * from "%s"."%s" limit 10000""" % (schema, table)
@@ -319,12 +319,12 @@ class BasicUnitTest:
         """
 
         ctx = Context(source_args)
-        db_conn = await asyncpg.connect(**ctx.conn_params)
+        db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
         db_source_rows = recordset_to_list_flat(await db_conn.fetch(query))
         await db_conn.close()
 
         ctx = Context(target_args)
-        db_conn = await asyncpg.connect(**ctx.conn_params)
+        db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
         db_target_rows = recordset_to_list_flat(await db_conn.fetch(query))
         await db_conn.close()
 
@@ -336,7 +336,7 @@ class BasicUnitTest:
     async def check_rows_count(self, args, objs) -> bool:
         failed_objs = []
         ctx = Context(args)
-        db_conn = await asyncpg.connect(**ctx.conn_params)
+        db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
 
         for obj in objs:
             try:
@@ -371,7 +371,7 @@ class BasicUnitTest:
         """
 
         ctx = Context(args)
-        db_conn = await asyncpg.connect(**ctx.conn_params)
+        db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
         db_rows = recordset_to_list_flat(await db_conn.fetch(query))
         await db_conn.close()
 
@@ -403,7 +403,7 @@ class BasicUnitTest:
         """
 
         ctx = Context(source_args)
-        db_conn = await asyncpg.connect(**ctx.conn_params)
+        db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
         db_source_rows = recordset_to_list_flat(await db_conn.fetch(query))
         for row in db_source_rows:
             data_query = """SELECT "%s" FROM "%s"."%s" LIMIT 5""" % (
@@ -416,7 +416,7 @@ class BasicUnitTest:
         await db_conn.close()
 
         ctx = Context(target_args)
-        db_conn = await asyncpg.connect(**ctx.conn_params)
+        db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
         db_target_rows = recordset_to_list_flat(await db_conn.fetch(query))
         for row in db_target_rows:
             data_query = """SELECT "%s" FROM "%s"."%s" LIMIT 5""" % (
@@ -826,7 +826,7 @@ class PGAnonUnitTest(unittest.IsolatedAsyncioTestCase, BasicUnitTest):
         )
 
         ctx = Context(args)
-        db_conn = await asyncpg.connect(**ctx.conn_params)
+        db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
         # pg_anon does not clear tables on its own
         await db_conn.execute("TRUNCATE TABLE schm_other_1.some_tbl")  # manual clean
         await db_conn.execute("TRUNCATE TABLE schm_other_2.some_tbl")
