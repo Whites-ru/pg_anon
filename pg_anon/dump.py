@@ -122,7 +122,7 @@ async def dump_by_query(ctx: Context, pool: Pool, query: str, sn_id: str, file_n
 
     try:
         async with pool.acquire() as db_conn:
-            async with db_conn.transaction(isolation='repeatable_read'):
+            async with db_conn.transaction(isolation='repeatable_read', readonly=True):
                 await db_conn.execute(f"SET TRANSACTION SNAPSHOT '{sn_id}';")
 
                 result = await dump_into_file(
@@ -388,7 +388,14 @@ async def make_dump_impl(ctx: Context, db_conn: Connection, sn_id: str):
         )
 
     # Wait for the remaining dumps to finish
-    await asyncio.wait(process_tasks)
+    task_group = asyncio.gather(*process_tasks)
+
+    # Keep main transaction in active
+    while not task_group.done():
+        await asyncio.sleep(60)
+        await db_conn.execute('SELECT 1')
+
+    await task_group
 
     task_results = {}
     for process_task in process_tasks:
@@ -556,7 +563,7 @@ async def make_dump(ctx: Context):
     if ctx.args.mode in (AnonMode.SYNC_DATA_DUMP, AnonMode.DUMP):
         db_conn = await asyncpg.connect(**ctx.conn_params, server_settings=ctx.server_settings)
         try:
-            async with db_conn.transaction(isolation='repeatable_read'):
+            async with db_conn.transaction(isolation='repeatable_read', readonly=True):
                 sn_id = await db_conn.fetchval("select pg_export_snapshot()")
                 await make_dump_impl(ctx, db_conn, sn_id)
         except:

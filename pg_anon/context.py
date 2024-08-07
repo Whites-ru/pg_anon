@@ -36,6 +36,8 @@ class Context:
             "lock_timeout": "0",
             "idle_in_transaction_session_timeout": "0",
             "idle_session_timeout": "0",
+
+            "synchronize_seqscans": "off",
         }
 
         self.conn_params = {
